@@ -1,0 +1,8 @@
+[package]
+name = "sat-trace-reconstruction"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+bitvec = "0.22.3"
+rand = "0.8.4"
