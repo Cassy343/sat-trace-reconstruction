@@ -1,9 +1,6 @@
 use bitvec::{prelude::BitVec, slice::BitSlice};
-use std::{
-    borrow::Borrow,
-    collections::HashSet,
-    fmt::{self, Display, Formatter},
-};
+use std::{borrow::Borrow, collections::{HashMap}, fmt::{self, Display, Formatter}};
+use crate::next_combination;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Term {
@@ -79,6 +76,12 @@ impl Conjunction {
             }
         }
     }
+
+    pub fn test(&self, x: &BitSlice) -> bool {
+        self.terms
+            .iter()
+            .all(|term| x[term.id as usize] ^ term.negated)
+    }
 }
 
 impl Display for Conjunction {
@@ -99,13 +102,13 @@ impl Display for Conjunction {
 
 #[derive(Debug)]
 pub struct TraceDisjunction {
-    clauses: HashSet<Conjunction>,
+    clauses: HashMap<Conjunction, u32>,
 }
 
 impl TraceDisjunction {
     pub fn from_trace(trace: &BitSlice, message_len: usize) -> Self {
         Self {
-            clauses: Self::clauses_from_trace(trace, message_len).collect(),
+            clauses: Self::clauses_from_trace(trace, message_len).map(|clause| (clause, 1)).collect(),
         }
     }
 
@@ -113,22 +116,39 @@ impl TraceDisjunction {
         TraceClauseIter::new(trace, message_len)
     }
 
+    pub fn clauses(&self) -> impl ExactSizeIterator<Item = &'_ Conjunction> {
+        self.clauses.keys()
+    }
+
     pub fn and<I>(&mut self, other: I)
     where
         I: Iterator,
         I::Item: Borrow<Conjunction>,
     {
-        let mut clauses = HashSet::new();
+        let mut clauses = HashMap::new();
 
         for rhs_clause in other {
-            for lhs_clause in self.clauses.iter() {
+            for (lhs_clause, &lhs_weight) in self.clauses.iter() {
                 if let Some(clause) = lhs_clause.merge(rhs_clause.borrow()) {
-                    clauses.insert(clause);
+                    let clause_weight = lhs_weight * 1;
+                    // println!("{}^{}, {}, {}", lhs_clause, lhs_weight, rhs_clause.borrow(), clause);
+
+                    clauses.entry(clause)
+                        .and_modify(|weight| *weight += *weight)
+                        .or_insert(clause_weight);
                 }
             }
         }
 
         self.clauses = clauses;
+    }
+
+    pub fn weight(&self, message: &BitSlice) -> u32 {
+        self.clauses
+            .iter()
+            .filter(|(clause, _)| clause.test(message))
+            .map(|(_, &weight)| weight)
+            .sum()
     }
 
     pub fn message(&self) -> Option<BitVec> {
@@ -138,7 +158,7 @@ impl TraceDisjunction {
 
         Some(
             self.clauses
-                .iter()
+                .keys()
                 .next()
                 .unwrap()
                 .terms
@@ -153,13 +173,17 @@ impl Display for TraceDisjunction {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.clauses.len() {
             0 => write!(f, "[]"),
-            1 => write!(f, "[\n    {}\n]", self.clauses.iter().next().unwrap()),
+            1 => {
+                let (clause, weight) = self.clauses.iter().next().unwrap();
+                write!(f, "[\n    {}^{}\n]", clause, weight)
+            },
             _ => {
                 let mut iter = self.clauses.iter();
+                let (clause, weight) = iter.next().unwrap();
 
-                write!(f, "[\n    {}", iter.next().unwrap())?;
-                for conj in iter {
-                    write!(f, " \u{2228}\n    {}", conj)?;
+                write!(f, "[\n    {}^{}", clause, weight)?;
+                for (clause, weight) in iter {
+                    write!(f, " \u{2228}\n    {}^{}", clause, weight)?;
                 }
                 write!(f, "\n]")
             }
@@ -203,55 +227,4 @@ impl<'a> Iterator for TraceClauseIter<'a> {
 
         Some(clause)
     }
-}
-
-/// Takes an input of numbers between 0 (inclusive) and bound (exclusive) in strictly increasing
-/// order and computes the next combination of non-duplicated numbers between 0 and bound.
-fn next_combination(set: &mut [usize], bound: usize) -> bool {
-    let len = set.len();
-
-    // Empty set, no combinations
-    if len == 0 {
-        return false;
-    }
-
-    // Increment the final index
-    set[len - 1] += 1;
-
-    // If we hit the bound, find the highest-indexed number we can increase, and then count up from
-    // that number by one for the remaining numbers
-    if set[len - 1] == bound {
-        // If the set is length one then we just need to count up to bound
-        if len == 1 {
-            return false;
-        }
-
-        // Find the highest index we can increase by one without collision
-        let mut offset = 2;
-        loop {
-            // We can increase the number without exceeding the bound of violating the invariant
-            // that the set is strictly increasing
-            if set[len - offset] < bound - offset {
-                break;
-            }
-
-            // We could not find a number to increase, all combinations have been taken
-            if offset == len {
-                return false;
-            }
-
-            offset += 1;
-        }
-
-        set[len - offset] += 1;
-        let mut value = set[len - offset];
-
-        // Set the remaining numbers to increase by one after the number we just incremented
-        for i in len - offset + 1..len {
-            value += 1;
-            set[i] = value;
-        }
-    }
-
-    true
 }
